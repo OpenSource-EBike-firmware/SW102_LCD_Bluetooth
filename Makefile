@@ -8,9 +8,17 @@ PROJ_DIR := .
 $(OUTPUT_DIRECTORY)/nrf51822_sw102.out: \
   LINKER_SCRIPT  := gcc_nrf51.ld
 
-# OpenOCD configuration. Change OPENOCD_PATH to your system setting.
-OPENOCD_PATH := E:/nrf5/Toolchain/OpenOCD/0.10.0-12-20190422-2015/bin
-OPENOCD := '$(OPENOCD_PATH)/openocd.exe' -f ../scripts/interface/stlink.cfg -f ../scripts/target/nrf51.cfg
+# dev platform specific.
+# OPENOCD_PATH := E:/nrf5/Toolchain/OpenOCD/0.10.0-12-20190422-2015/bin
+# OPENOCD_BIN := openocd.exe
+# NRFUTIL := $(SDK_ROOT)/external_tools/Windows/nrfutil.exe
+
+OPENOCD_PATH := /usr/local/share/openocd/bin
+OPENOCD_BIN := openocd
+NRFUTIL := nrfutil
+
+
+OPENOCD := '$(OPENOCD_PATH)/$(OPENOCD_BIN)' -f $(OPENOCD_PATH)/../scripts/interface/stlink.cfg -f $(OPENOCD_PATH)/../scripts/target/nrf51.cfg
 
 # Source files common to all targets
 SRC_FILES += \
@@ -18,17 +26,26 @@ SRC_FILES += \
   $(PROJ_DIR)/src/lcd.c \
   $(PROJ_DIR)/src/ugui.c \
   $(PROJ_DIR)/src/button.c \
+  $(PROJ_DIR)/src/buttons.c \
   $(PROJ_DIR)/src/ble_uart.c \
   $(PROJ_DIR)/src/uart.c \
   $(PROJ_DIR)/src/utils.c \
   $(PROJ_DIR)/src/eeprom.c \
+  $(PROJ_DIR)/src/eeprom_hw.c \
+  $(PROJ_DIR)/src/screen.c \
+  $(PROJ_DIR)/src/configscreen.c \
+  $(PROJ_DIR)/src/rtc.c \
+  $(PROJ_DIR)/src/fonts.c \
+  $(PROJ_DIR)/src/mainscreen.c \
   $(SDK_ROOT)/components/libraries/util/app_error.c \
   $(SDK_ROOT)/components/libraries/util/app_error_weak.c \
   $(SDK_ROOT)/components/libraries/util/nrf_assert.c \
   $(SDK_ROOT)/components/libraries/timer/app_timer.c \
   $(SDK_ROOT)/components/libraries/util/app_util_platform.c \
+  $(SDK_ROOT)/components/libraries/util/sdk_mapped_flags.c \
   $(SDK_ROOT)/components/libraries/bootloader/dfu/nrf_dfu_settings.c \
   $(SDK_ROOT)/components/libraries/fstorage/fstorage.c \
+  $(SDK_ROOT)/components/libraries/fds/fds.c \
   $(SDK_ROOT)/components/drivers_nrf/common/nrf_drv_common.c \
   $(SDK_ROOT)/components/drivers_nrf/clock/nrf_drv_clock.c \
   $(SDK_ROOT)/components/drivers_nrf/gpiote/nrf_drv_gpiote.c \
@@ -177,7 +194,7 @@ CFLAGS += -DNRF51822
 CFLAGS += -DNRF_SD_BLE_API_VERSION=2
 CFLAGS += -mcpu=cortex-m0
 CFLAGS += -mthumb -mabi=aapcs
-CFLAGS += -Wall
+CFLAGS += -Wall -Werror
 CFLAGS += -mfloat-abi=soft
 # keep every function in separate section, this allows linker to discard unused ones
 CFLAGS += -ffunction-sections -fdata-sections -fno-strict-aliasing
@@ -205,6 +222,7 @@ LDFLAGS += -mcpu=cortex-m0
 LDFLAGS += -Wl,--gc-sections
 # use newlib in nano version
 LDFLAGS += --specs=nano.specs -lc -lnosys
+LDFLAGS += -Xlinker -Map=$(OUTPUT_DIRECTORY)/nrf51822_sw102.map
 
 
 .PHONY: $(TARGETS) default all clean help flash flash_softdevice
@@ -226,7 +244,11 @@ $(foreach target, $(TARGETS), $(call define_target, $(target)))
 # Flash the program
 flash_program: $(OUTPUT_DIRECTORY)/nrf51822_sw102.hex
 	@echo Flashing: $<
-	$(OPENOCD) -c "init; reset init; flash write_image erase $<; verify_image $<; reset halt; resume; shutdown"
+	$(OPENOCD) -c "init; reset init; flash write_image erase $<; verify_image $<; echo FLASHED; reset halt; resume; shutdown"
+
+openocd:
+	@echo Starting OPENOCD shell
+	$(OPENOCD) -c "init; reset init;"
 
 # Flash softdevice
 flash_softdevice:
@@ -239,10 +261,17 @@ erase:
 	$(OPENOCD) -c "init; reset init; nrf51 mass_erase; shutdown"
 
 # Generate DFU package
-NRFUTIL := $(SDK_ROOT)/external_tools/Windows/nrfutil.exe
-KEYFILE := $(PROJ_DIR)/private.key
-generate_dfu_package:
+KEYFILE := $(PROJ_DIR)/../SW102_LCD_Bluetooth-bootloader/private.key
+generate_dfu_package: $(OUTPUT_DIRECTORY)/nrf51822_sw102.hex
 	$(NRFUTIL) pkg generate --application ./$(OUTPUT_DIRECTORY)/nrf51822_sw102.hex --key-file $(KEYFILE) --application-version 1 --hw-version 51 --sd-req 0x87 update_firmware.zip
+
+# Generate a prebuilt bin file with bootloader apploand and valid app crc
+# per appendix 1 here: https://devzone.nordicsemi.com/nordic/nordic-blog/b/blog/posts/getting-started-with-nordics-secure-dfu-bootloader
+# Note: srec_cmp is part of the 'srecord' debian package, for windows supposedly mergehex does the same thing
+full_install:
+	nrfutil settings generate --family NRF51 --application $(OUTPUT_DIRECTORY)/nrf51822_sw102.hex --application-version 0 --bootloader-version 0 --bl-settings-version 1 $(OUTPUT_DIRECTORY)/bootloader_setting.hex
+	srec_cat -MULTiple ../SW102_LCD_Bluetooth-bootloader/_build/sw102_bootloader.hex -Intel $(SDK_ROOT)/components/softdevice/s130/hex/s130_nrf51_2.0.1_softdevice.hex -Intel $(OUTPUT_DIRECTORY)/nrf51822_sw102.hex -Intel $(OUTPUT_DIRECTORY)/bootloader_setting.hex -Intel -Output $(OUTPUT_DIRECTORY)/sw102-full.hex -Intel 
+	$(OPENOCD) -c "init; reset init; nrf51 mass_erase; flash write_image $(OUTPUT_DIRECTORY)/sw102-full.hex; verify_image $(OUTPUT_DIRECTORY)/sw102-full.hex; echo FLASHED; reset halt; resume; shutdown"
 
 # Start CMSIS_Configuration_Wizard
 SDK_CONFIG_FILE := $(PROJ_DIR)/include/sdk_config.h
